@@ -1,3 +1,6 @@
 [submodule "external/F2GNN"]
 	path = external/F2GNN
 	url = https://github.com/nancui0000/F2GNN
+[submodule "external/MP-SPDZ"]
+	path = external/MP-SPDZ
+	url = https://github.com/data61/MP-SPDZ
