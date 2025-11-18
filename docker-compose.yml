@@ -1,0 +1,40 @@
+version: "3.9"
+
+services:
+  server:
+    build:
+      context: .
+      dockerfile: docker/Server.Dockerfile
+    container_name: fl_server
+    environment:
+      - EXPECTED_CLIENTS=3          # set how many clients you will run
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./:/app:rw                  # mount your repo
+    networks:
+      - flnet
+
+  client:
+    build:
+      context: .
+      dockerfile: docker/Client.Dockerfile
+    environment:
+      - SERVER_URL=http://server:5000
+      - CID=${CID}                  # overridden by compose when scaling
+      - DATASET=pokec-z
+      - NUM_HOPS=3
+      - LOCAL_EP=3
+      - ROUNDS=5
+      - SEED=31
+      - SLEEP_BETWEEN_ROUNDS=0.25
+    volumes:
+      - ./:/app:rw                  # so client sees external/F2GNN and data
+    depends_on:
+      - server
+    networks:
+      - flnet
+
+networks:
+  flnet:
+    driver: bridge

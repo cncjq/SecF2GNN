@@ -1,0 +1,108 @@
+
+=================================================
+Parameters: 
+Namespace(epochs=500, ego_number=30, local_ep=20, lr=0.0001, model='GCN', num_hidden=64, dropout=0.5, weight_decay=0.001, alpha=1e-06, acc=0.66, num_hops=3, dataset='pokec-z', gpu='0', optimizer='adam', seed=31, update_method='combine', aggregate_method='1-|inter-intra|', patience=30, penalty='fair', tau=4.0, tau_combine=0.01, tau_fair_loss=4.0, lambda1=0.5, log_dir='../logs', local_fairness_measure='median')
+Best Results:
+Epoch: 494
+Validation accuracy: 0.6731070496083551 Validation auc: 0.7320133093328969 Validation parity: 0.07232018485053837 Validation equality: 0.07377953895704414
+Test accuracy: 0.6746736292428198 Test auc: 0.7197308559223284 Test parity: 0.026997706061948068 Test equality: 0.06287550578330003 Test measure_local_parity: 0.06608694791793823 Test measure_local_equality: 0.09790205955505371
+Time: 2.3342 mins
+
+=================================================
+Parameters: 
+Namespace(epochs=500, ego_number=30, local_ep=20, lr=0.0001, model='GCN', num_hidden=64, dropout=0.5, weight_decay=0.001, alpha=1e-06, acc=0.66, num_hops=3, dataset='pokec-n', gpu='0', optimizer='adam', seed=31, update_method='combine', aggregate_method='1-|inter-intra|', patience=30, penalty='fair', tau=4.0, tau_combine=0.01, tau_fair_loss=4.0, lambda1=0.5, log_dir='../logs', local_fairness_measure='median')
+Best Results:
+Epoch: 385
+Validation accuracy: 0.6675291073738681 Validation auc: 0.7045313790255986 Validation parity: 6.258743833298386e-05 Validation equality: 0.00129428744354948
+Test accuracy: 0.6658047834518422 Test auc: 0.6965244650402072 Test parity: 0.012615478149977016 Test equality: 0.0037304800462694687 Test measure_local_parity: 0.07916668057441711 Test measure_local_equality: 0.06666666269302368
+Time: 2.3018 mins
+
+=================================================
+Parameters: 
+Namespace(epochs=500, ego_number=30, local_ep=20, lr=0.0001, model='GCN', num_hidden=64, dropout=0.5, weight_decay=0.001, alpha=1e-06, acc=0.66, num_hops=3, dataset='pokec-n', gpu='0', optimizer='adam', seed=31, update_method='combine', aggregate_method='1-|inter-intra|', patience=30, penalty='fair', tau=4.0, tau_combine=0.01, tau_fair_loss=4.0, lambda1=0.5, log_dir='../logs', local_fairness_measure='median')
+Best Results:
+Epoch: 385
+Validation accuracy: 0.6675291073738681 Validation auc: 0.7045313790255987 Validation parity: 6.258743833298386e-05 Validation equality: 0.00129428744354948
+Test accuracy: 0.6658047834518422 Test auc: 0.6965244650402072 Test parity: 0.012615478149977016 Test equality: 0.0037304800462694687 Test measure_local_parity: 0.07916668057441711 Test measure_local_equality: 0.06666666269302368
+Time: 2.3103 mins
+
+=================================================
+Parameters: 
+Namespace(epochs=50, ego_number=30, local_ep=20, lr=0.0001, model='GCN', num_hidden=64, dropout=0.5, weight_decay=0.001, alpha=1e-06, acc=0.66, num_hops=3, dataset='pokec-z', gpu='0', optimizer='adam', seed=31, update_method='combine', aggregate_method='1-|inter-intra|', patience=30, penalty='fair', tau=4.0, tau_combine=0.01, tau_fair_loss=4.0, lambda1=0.5, log_dir='../logs', local_fairness_measure='median')
+Best Results:
+Epoch: 25
+Validation accuracy: 0.5650130548302872 Validation auc: 0.5811880216003926 Validation parity: 0.08161447744898725 Validation equality: 0.0990934751927044
+Test accuracy: 0.572845953002611 Test auc: 0.5742059145673604 Test parity: 0.08130827106427951 Test equality: 0.09686516532472311 Test measure_local_parity: 0.07999998331069946 Test measure_local_equality: 0.0952380895614624
+Time: 0.2446 mins
+
+=================================================
+Parameters: 
+Namespace(epochs=50, ego_number=30, local_ep=20, lr=0.0001, model='GCN', num_hidden=64, dropout=0.5, weight_decay=0.001, alpha=1e-06, acc=0.66, num_hops=3, dataset='pokec-n', gpu='0', optimizer='adam', seed=31, update_method='combine', aggregate_method='1-|inter-intra|', patience=30, penalty='fair', tau=4.0, tau_combine=0.01, tau_fair_loss=4.0, lambda1=0.5, log_dir='../logs', local_fairness_measure='median')
+Best Results:
+Epoch: 20
+Validation accuracy: 0.5782664941785253 Validation auc: 0.5864090779873022 Validation parity: 0.007436860319564101 Validation equality: 0.0031751943759020518
+Test accuracy: 0.599224305106658 Test auc: 0.581572849938667 Test parity: 0.016530243041653694 Test equality: 0.041459417775207244 Test measure_local_parity: 0.01124514453113079 Test measure_local_equality: 0.0
+Time: 0.2387 mins
+
+=================================================
+Parameters: 
+Namespace(epochs=50, ego_number=30, local_ep=20, lr=0.0001, model='GCN', num_hidden=64, dropout=0.5, weight_decay=0.001, alpha=1e-06, acc=0.66, num_hops=3, dataset='pokec-n', gpu='0', optimizer='adam', seed=31, update_method='combine', aggregate_method='1-|inter-intra|', patience=30, penalty='fair', tau=4.0, tau_combine=0.01, tau_fair_loss=4.0, lambda1=0.5, log_dir='../logs', local_fairness_measure='median')
+Best Results:
+Epoch: 20
+Validation accuracy: 0.5782664941785253 Validation auc: 0.5864099240568017 Validation parity: 0.007436860319564101 Validation equality: 0.0031751943759020518
+Test accuracy: 0.599224305106658 Test auc: 0.581572849938667 Test parity: 0.016530243041653694 Test equality: 0.041459417775207244 Test measure_local_parity: 0.01124514453113079 Test measure_local_equality: 0.0
+Time: 0.2451 mins
+
+=================================================
+Parameters: 
+Namespace(epochs=500, ego_number=30, local_ep=20, lr=0.0001, model='GCN', num_hidden=64, dropout=0.5, weight_decay=0.001, alpha=1e-06, acc=0.66, num_hops=3, dataset='pokec-z', gpu='0', optimizer='adam', seed=31, update_method='combine', aggregate_method='1-|inter-intra|', patience=30, penalty='fair', tau=4.0, tau_combine=0.01, tau_fair_loss=4.0, lambda1=0.5, log_dir='../logs', local_fairness_measure='median', mpc_compare_round=-1, mpc_fraction_bits=16)
+Best Results:
+Epoch: 467
+Validation accuracy: 0.6710182767624021 Validation auc: 0.717538864342988 Validation parity: 0.043167871395226265 Validation equality: 0.030145116346397383
+Test accuracy: 0.6621409921671018 Test auc: 0.7011448078651022 Test parity: 0.00551341801456029 Test equality: 0.02920770834184816 Test measure_local_parity: 0.0559999942779541 Test measure_local_equality: 0.06041663885116577
+Time: 2.3451 mins
+
+=================================================
+Parameters: 
+Namespace(epochs=50, ego_number=30, local_ep=20, lr=0.0001, model='GCN', num_hidden=64, dropout=0.5, weight_decay=0.001, alpha=1e-06, acc=0.66, num_hops=3, dataset='pokec-z', gpu='0', optimizer='adam', seed=31, update_method='combine', aggregate_method='1-|inter-intra|', patience=30, penalty='fair', tau=4.0, tau_combine=0.01, tau_fair_loss=4.0, lambda1=0.5, log_dir='../logs', local_fairness_measure='median')
+Best Results:
+Epoch: 25
+Validation accuracy: 0.5650130548302872 Validation auc: 0.5811880216003927 Validation parity: 0.08161447744898725 Validation equality: 0.0990934751927044
+Test accuracy: 0.572845953002611 Test auc: 0.5742053680153385 Test parity: 0.08130827106427951 Test equality: 0.09686516532472311 Test measure_local_parity: 0.07999998331069946 Test measure_local_equality: 0.0952380895614624
+Time: 0.2448 mins
+
+=================================================
+Parameters: 
+Namespace(epochs=50, ego_number=30, local_ep=20, lr=0.0001, model='GCN', num_hidden=64, dropout=0.5, weight_decay=0.001, alpha=1e-06, acc=0.66, num_hops=3, dataset='pokec-z', gpu='0', optimizer='adam', seed=31, update_method='combine', aggregate_method='1-|inter-intra|', patience=30, penalty='fair', tau=4.0, tau_combine=0.01, tau_fair_loss=4.0, lambda1=0.5, log_dir='../logs', local_fairness_measure='median', mpc=True)
+Best Results:
+Epoch: 25
+Validation accuracy: 0.5655352480417755 Validation auc: 0.5838444335351551 Validation parity: 0.08149329869738725 Validation equality: 0.08749502406542903
+Test accuracy: 0.5634464751958225 Test auc: 0.5692820274019321 Test parity: 0.07758735826907265 Test equality: 0.07813074753749949 Test measure_local_parity: 0.07856547832489014 Test measure_local_equality: 0.0714285671710968
+Time: 21.7919 mins
+
+=================================================
+Parameters: 
+Namespace(epochs=50, ego_number=30, local_ep=20, lr=0.0001, model='GCN', num_hidden=64, dropout=0.5, weight_decay=0.001, alpha=1e-06, acc=0.66, num_hops=3, dataset='pokec-n', gpu='0', optimizer='adam', seed=31, update_method='combine', aggregate_method='1-|inter-intra|', patience=30, penalty='fair', tau=4.0, tau_combine=0.01, tau_fair_loss=4.0, lambda1=0.5, log_dir='../logs', local_fairness_measure='median', mpc=True)
+Best Results:
+Epoch: 20
+Validation accuracy: 0.5821474773609315 Validation auc: 0.5813588891445899 Validation parity: 0.003460717178411024 Validation equality: 0.007430513524838214
+Test accuracy: 0.5934065934065934 Test auc: 0.5868355594929808 Test parity: 0.009981538324658576 Test equality: 0.025978407557354935 Test measure_local_parity: 0.0 Test measure_local_equality: 0.0
+Time: 21.0107 mins
+
+=================================================
+Parameters: 
+Namespace(epochs=50, ego_number=60, local_ep=20, lr=0.0001, model='GCN', num_hidden=64, dropout=0.5, weight_decay=0.001, alpha=1e-06, acc=0.66, num_hops=3, dataset='pokec-n', gpu='0', optimizer='adam', seed=31, update_method='combine', aggregate_method='1-|inter-intra|', patience=30, penalty='fair', tau=4.0, tau_combine=0.01, tau_fair_loss=4.0, lambda1=0.5, log_dir='../logs', local_fairness_measure='median', mpc=True)
+Best Results:
+Epoch: 39
+Validation accuracy: 0.5685640362225097 Validation auc: 0.5609880738043346 Validation parity: 0.005150578013401089 Validation equality: 0.0044787932399087405
+Test accuracy: 0.5843568196509373 Test auc: 0.5557567807005588 Test parity: 0.015855539244035183 Test equality: 0.011943319838056687 Test measure_local_parity: 0.04341927170753479 Test measure_local_equality: 0.03854818642139435
+Time: 39.3425 mins
+
+=================================================
+Parameters: 
+Namespace(epochs=50, ego_number=60, local_ep=20, lr=0.0001, model='GCN', num_hidden=64, dropout=0.5, weight_decay=0.001, alpha=1e-06, acc=0.66, num_hops=3, dataset='pokec-z', gpu='0', optimizer='adam', seed=31, update_method='combine', aggregate_method='1-|inter-intra|', patience=30, penalty='fair', tau=4.0, tau_combine=0.01, tau_fair_loss=4.0, lambda1=0.5, log_dir='../logs', local_fairness_measure='median', mpc=True)
+Best Results:
+Epoch: 28
+Validation accuracy: 0.5451697127937337 Validation auc: 0.5697507227404135 Validation parity: 0.03793953768541525 Validation equality: 0.008884304997647696
+Test accuracy: 0.5227154046997389 Test auc: 0.5463372269699374 Test parity: 0.0027731110158232264 Test equality: 0.007755343932643988 Test measure_local_parity: 0.06882590055465698 Test measure_local_equality: 0.09999999403953552
+Time: 40.1383 mins

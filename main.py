@@ -15,7 +15,7 @@ from scipy.spatial import distance
 from sklearn.metrics import roc_auc_score
 
 # --- YOUR helpers (import these FIRST to avoid name clash) ---
-from runner_utils import set_seed, fair_metric, local_fairness
+from runner_utils import set_seed, fair_metric, local_fairness, f2gnn_agg, save_local_params
 
 # Torch Geometric utils
 from torch_geometric.utils import subgraph, k_hop_subgraph
@@ -220,7 +220,15 @@ def main():
                     Beta = distance.jensenshannon(y_g, y_l)
                     if not torch.is_tensor(Beta):
                         Beta = torch.tensor(Beta, dtype=torch.float32, device=device)
-                    new_local_weights = ext["update_weights"](local_models[i].state_dict(), global_weights, Beta)
+
+                    w_local = local_models[i].state_dict()
+                    w_server = {}
+                    for k, v in global_weights.items():
+                        if k in w_local:
+                            w_server[k] = v.to(device=w_local[k].device, dtype=w_local[k].dtype)
+                    new_local_weights = ext["update_weights"](w_local, w_server, Beta)
+
+                    # new_local_weights = ext["update_weights"](local_models[i].state_dict(), global_weights, Beta)
                     local_models[i].load_state_dict(new_local_weights)
                 else:
                     local_models[i].load_state_dict(copy.deepcopy(global_weights))
@@ -266,25 +274,55 @@ def main():
         if args.aggregate_method == 'avg':
             global_weights = ext["average_weights"](local_weights)
         else:
-            if args.aggregate_method == '1-|inter-intra|':
-                difference_weight_vector  = [abs(inter_ratio_per_client[i] - intra_ratio_per_client[i]) for i in egos]
-                difference_weight_vector2 = [(1 - i) for i in difference_weight_vector]
-                temp_weights_vector = softmax(difference_weight_vector2)
+            if args.mpc == True:
+                if args.aggregate_method == '1-|inter-intra|':
+                    difference_weight_vector  = [abs(inter_ratio_per_client[i] - intra_ratio_per_client[i]) for i in egos]
+                    difference_weight_vector2 = [(1 - i) for i in difference_weight_vector]
+                    # temp_weights_vector = softmax(difference_weight_vector2)
+                    temp_weights_vector2 = [(1 / (local_models[i].equality + local_models[i].parity + 1E-5)) for i in egos]
+                    # temp_weights_vector2 = torch.tensor(temp_weights_vector2, device=device)
+                    save_local_params(
+                        "results/mpc_inputs",
+                        "client0_round1",
+                        args.lambda1,
+                        args.tau,
+                        difference_weight_vector2,
+                        temp_weights_vector2,
+                        local_weights
+                    )
+                    global_weights = f2gnn_agg()
+                    # temp_weights_vector2 = torch.softmax(temp_weights_vector2, dim=-1)
+                    # temp_weights_vector2 = [torch.exp(i) for i in temp_weights_vector2]
 
-                temp_weights_vector2 = [(1 / (local_models[i].equality + local_models[i].parity + 1E-5)) for i in egos]
-                temp_weights_vector2 = torch.tensor(temp_weights_vector2, device=device)
-                temp_weights_vector2 = torch.softmax(temp_weights_vector2, dim=-1)
-                temp_weights_vector2 = [torch.exp(i) for i in temp_weights_vector2]
+                    # normalized_weights_vector = [(args.lambda1 * w1 + w2) / args.tau
+                    #                             for w1, w2 in zip(temp_weights_vector, temp_weights_vector2)]
+                    # normalized_weights_vector = torch.tensor(normalized_weights_vector, device=device)
+                    # normalized_weights_vector = torch.softmax(normalized_weights_vector, dim=-1)
+                else:
+                    raise ValueError("args.aggregate_method is wrong!")
+                # global_weights = ext["aggregate_weights"](local_weights, normalized_weights_vector)
+            else:    
+                if args.aggregate_method == '1-|inter-intra|':
+                    difference_weight_vector  = [abs(inter_ratio_per_client[i] - intra_ratio_per_client[i]) for i in egos]
+                    difference_weight_vector2 = [(1 - i) for i in difference_weight_vector]
+                    temp_weights_vector = softmax(difference_weight_vector2)
 
-                normalized_weights_vector = [(args.lambda1 * w1 + w2) / args.tau
-                                             for w1, w2 in zip(temp_weights_vector, temp_weights_vector2)]
-                normalized_weights_vector = torch.tensor(normalized_weights_vector, device=device)
-                normalized_weights_vector = torch.softmax(normalized_weights_vector, dim=-1)
-            else:
-                raise ValueError("args.aggregate_method is wrong!")
-            global_weights = ext["aggregate_weights"](local_weights, normalized_weights_vector)
+                    temp_weights_vector2 = [(1 / (local_models[i].equality + local_models[i].parity + 1E-5)) for i in egos]
+                    temp_weights_vector2 = torch.tensor(temp_weights_vector2, device=device)
+                    temp_weights_vector2 = torch.softmax(temp_weights_vector2, dim=-1)
+                    temp_weights_vector2 = [torch.exp(i) for i in temp_weights_vector2]
 
+                    normalized_weights_vector = [(args.lambda1 * w1 + w2) / args.tau
+                                                for w1, w2 in zip(temp_weights_vector, temp_weights_vector2)]
+                    normalized_weights_vector = torch.tensor(normalized_weights_vector, device=device)
+                    normalized_weights_vector = torch.softmax(normalized_weights_vector, dim=-1)
+                else:
+                    raise ValueError("args.aggregate_method is wrong!")
+                global_weights = ext["aggregate_weights"](local_weights, normalized_weights_vector)
         global_model.load_state_dict(global_weights)
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        global_model = global_model.to(device)
+
 
         # train/val metrics
         loss_avg = sum(local_losses) / max(len(local_losses), 1)

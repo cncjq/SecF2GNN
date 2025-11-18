@@ -1,0 +1,31 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+--find-links https://data.pyg.org/whl/torch-1.13.0+cpu.html
+
+# core
+torch==1.13.1
+torchvision==0.14.1
+torchaudio==0.13.1
+
+# PyG ops resolved via the find-links above for torch 1.13 CPU
+torch-scatter
+torch-sparse
+torch-cluster
+torch-spline-conv
+torch-geometric==2.2.0
+
+# DGL CPU
+dgl==0.9.1
+
+# your deps
+numpy==1.23.5
+pandas==1.5.2
+scikit_learn==1.2.0
+scipy==1.10.0
+tqdm==4.64.1
+networkx==2.8.8
+
+# server/client comms
+fastapi==0.110.0
+uvicorn[standard]==0.27.1
+requests==2.32.3
+
