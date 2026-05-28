@@ -9,6 +9,7 @@ import torch
 import subprocess
 import re
 import json
+import copy
 
 
 MPSPDZ_PATH = os.environ.get(
@@ -16,80 +17,47 @@ MPSPDZ_PATH = os.environ.get(
     "/home/jiaqiang/SecF2GNN/external/MP-SPDZ"
 )
 
-def set_seed(seed: int, gpu_flag) -> None:
-    """
-    Set all RNG seeds. Pass args.gpu (str or int) or 'cpu' in gpu_flag.
-    """
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if gpu_flag != 'cpu' and torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
+# def set_seed(seed):
+#     random.seed(seed)
+#     np.random.seed(seed)
+#     torch.manual_seed(seed)
+#     if args.gpu != 'cpu':
+#         torch.cuda.manual_seed(seed)
+#         torch.cuda.manual_seed_all(seed)
 
+# def fair_metric(output, idx, labels, sens):
+#     val_y = labels[idx].cpu().numpy()
+#     idx_s0 = sens.cpu().numpy()[idx.cpu().numpy()] == 0
+#     idx_s1 = sens.cpu().numpy()[idx.cpu().numpy()] == 1
 
-def fair_metric(output: torch.Tensor,
-                idx: torch.Tensor,
-                labels: torch.Tensor,
-                sens: torch.Tensor) -> Tuple[float, float]:
-    """
-    Returns (parity, equality) on the subset given by idx.
-    """
-    val_y = labels[idx].detach().cpu().numpy()
-    idx_cpu = idx.detach().cpu().numpy()
-    sens_np = sens.detach().cpu().numpy()
+#     idx_s0_y1 = np.bitwise_and(idx_s0, val_y == 1)
+#     idx_s1_y1 = np.bitwise_and(idx_s1, val_y == 1)
 
-    idx_s0 = sens_np[idx_cpu] == 0
-    idx_s1 = sens_np[idx_cpu] == 1
+#     pred_y = (output[idx].squeeze() > 0).type_as(labels).cpu().numpy()
+#     parity = abs(sum(pred_y[idx_s0]) / sum(idx_s0) - sum(pred_y[idx_s1]) / sum(idx_s1))
+#     equality = abs(sum(pred_y[idx_s0_y1]) / sum(idx_s0_y1) - sum(pred_y[idx_s1_y1]) / sum(idx_s1_y1))
 
-    idx_s0_y1 = np.bitwise_and(idx_s0, val_y == 1)
-    idx_s1_y1 = np.bitwise_and(idx_s1, val_y == 1)
+#     return parity, equality
 
-    pred_y = (output[idx].squeeze() > 0).type_as(labels).detach().cpu().numpy()
+# def local_fairness(model, clients, device):
+#     local_parity, local_equality = [], []
+#     model = model.to(device)
+#     model.eval()
+#     for client in clients:
+#         model.eval()
+#         client.sub_G = client.sub_G.to(device)
+#         client.sub_features = client.sub_features.to(device)
+#         local_ouput = model(client.sub_G, client.sub_features)
+#         local_parity_element, local_equality_element = fair_metric(local_ouput, client.idx_train_with_mask,
+#                                                                    client.sub_labels, client.sub_sens)
+#         local_parity.append(local_parity_element)
+#         local_equality.append(local_equality_element)
 
-    # small eps avoidance if a group has zero samples
-    def safe_ratio(num, den): 
-        den = max(int(den), 1)
-        return float(num) / float(den)
-
-    parity = abs(safe_ratio(sum(pred_y[idx_s0]), sum(idx_s0)) -
-                 safe_ratio(sum(pred_y[idx_s1]), sum(idx_s1)))
-
-    equality = abs(safe_ratio(sum(pred_y[idx_s0_y1]), sum(idx_s0_y1)) -
-                   safe_ratio(sum(pred_y[idx_s1_y1]), sum(idx_s1_y1)))
-
-    return float(parity), float(equality)
-
-
-def local_fairness(model,
-                   clients: List,
-                   device: torch.device) -> Tuple[float, float]:
-    """
-    Evaluate mean local parity/equality over clients (each client has subgraph tensors).
-    """
-    local_parity, local_equality = [], []
-    model = model.to(device)
-    model.eval()
-
-    for client in clients:
-        client.sub_G = client.sub_G.to(device)
-        client.sub_features = client.sub_features.to(device)
-
-        with torch.no_grad():
-            local_output = model(client.sub_G, client.sub_features)
-
-        lp, le = fair_metric(local_output,
-                             client.idx_train_with_mask,
-                             client.sub_labels,
-                             client.sub_sens)
-        local_parity.append(lp)
-        local_equality.append(le)
-
-    mean_local_parity = float(sum(local_parity) / max(len(local_parity), 1))
-    mean_local_equality = float(sum(local_equality) / max(len(local_equality), 1))
-    print("mean_local_parity: ", mean_local_parity)
-    print("mean_local_equality: ", mean_local_equality)
-    return mean_local_parity, mean_local_equality
+#     mean_local_parity = sum(local_parity) / len(local_parity)
+#     mean_local_equality = sum(local_equality) / len(local_equality)
+#     print("mean_local_parity: ", mean_local_parity.item())
+#     print("mean_local_equality: ", mean_local_equality.item())
+#     return mean_local_parity.item(), mean_local_equality.item()
 
 def save_local_params(out_dir, case_name, lambda1, tau, data_bias_weights, model_fairness_weights, local_weights):
     """
@@ -110,11 +78,25 @@ def save_local_params(out_dir, case_name, lambda1, tau, data_bias_weights, model
         f.write(f"tau: {tau}\n")
 
     # --- Lists ---
+    # def write_list(vals, name):
+    #     path = out_dir / f"{name}_{case_name}.txt"
+    #     with open(path, "w") as f:
+    #         for v in (vals or []):
+    #             f.write(f"{float(v)}\n")
+
     def write_list(vals, name):
         path = out_dir / f"{name}_{case_name}.txt"
+        if vals is None:
+            iterable = []
+        elif isinstance(vals, torch.Tensor):
+            iterable = vals.detach().cpu().view(-1).tolist()
+        else:
+            iterable = list(vals)
+
         with open(path, "w") as f:
-            for v in (vals or []):
-                f.write(f"{float(v)}\n")
+            for v in iterable:
+                f.write(f"{v}\n")
+
 
     write_list(data_bias_weights, "data_bias_weights")
     write_list(model_fairness_weights, "model_fairness_weights")
@@ -164,285 +146,6 @@ def save_local_params(out_dir, case_name, lambda1, tau, data_bias_weights, model
 
 
 
-# def f2gnn_agg(
-#     mp_spdz_path="/home/jiaqiang/SecF2GNN/external/MP-SPDZ",
-#     program="f2gnn_agg",
-#     parties=2,
-#     fracbits=16,
-#     port_base=15000,
-#     verbose=True,
-#     expect_shape=None
-# ):
-#     """
-#     Compile and execute Programs/Source/f2gnn_agg.mpc using semi2k-party.x.
-
-#     Assumes Player-Data/Input-P0-0 is already written.
-#     """
-
-#     mp = Path(mp_spdz_path)
-#     binary = mp / "semi2k-party.x"
-
-#     # --- Check binaries ---
-#     if not binary.exists():
-#         raise FileNotFoundError(f"{binary} not found. Build it via 'make semi2k-party.x'")
-
-#     # --- Compile the MPC program ---
-#     print(f"🔧 Compiling {program}.mpc ...")
-#     subprocess.run(["./compile.py", "-R", "128", program],
-#                    cwd=mp, check=True)
-
-#     # --- Run all parties ---
-#     print(f"🚀 Running {program} with {parties} parties ...")
-#     procs, outs, errs = [], [], []
-
-#     for p in range(parties):
-#         cmd = [
-#             f"./semi2k-party.x",
-#             "-N", str(parties),
-#             "-p", str(p),
-#             "-pn", str(port_base),
-#             # "-F", str(fracbits),
-#             program,
-#         ]
-#         procs.append(subprocess.Popen(
-#             cmd, cwd=mp, text=True,
-#             stdout=subprocess.PIPE, stderr=subprocess.PIPE
-#         ))
-
-#     for proc in procs:
-#         out, err = proc.communicate()
-#         outs.append(out or "")
-#         errs.append(err or "")
-
-#     # --- Print results ---
-#     if verbose:
-#         print("\n=== STDOUT ===")
-#         for i, o in enumerate(outs):
-#             print(f"[P{i}]\n{o}")
-#         print("=== STDERR ===")
-#         for i, e in enumerate(errs):
-#             if e.strip():
-#                 print(f"[P{i}] {e}")
-
-#     # --- Extract first revealed number (if any) ---
-
-#     def _extract_next_bracket_block(text, start_pos):
-#         # Find the first '[' after start_pos, then return the balanced block as a string and end index.
-#         i = text.find('[', start_pos)
-#         if i == -1:
-#             return None, start_pos
-#         depth, j = 0, i
-#         while j < len(text):
-#             ch = text[j]
-#             if ch == '[':
-#                 depth += 1
-#             elif ch == ']':
-#                 depth -= 1
-#                 if depth == 0:
-#                     return text[i:j+1], j+1
-#             j += 1
-#         return None, start_pos  # unbalanced
-
-#     def parse_tensors_from_stdout(to_parse, default_fracbits=None, device="cpu", transpose_for_linear=None):
-#         """
-#         Parses outputs like:
-
-#         TENSOR gc1.weight SHAPE 276 64
-#         [ [ ... ], [ ... ], ... ]
-#         TENSOR gc1.bias SHAPE 64
-#         0.1 0.2 0.3 ...  (or [0.1, 0.2, ...])
-#         TENSOR classifier.bias SHAPE 1
-#         -0.0123456        (scalar, no brackets)
-
-#         Returns {name: torch.Tensor}.
-#         """
-#         if transpose_for_linear is None:
-#             transpose_for_linear = set()
-
-#         tensors = {}
-
-#         # Find all headers and their spans
-#         header_re = re.compile(r"^TENSOR\s+(\S+)\s+SHAPE\s+(\d+)(?:\s+(\d+))?\s*$", re.M)
-#         headers = list(header_re.finditer(to_parse))
-
-#         if not headers:
-#             raise ValueError("No 'TENSOR <name> SHAPE ...' headers found in stdout.")
-
-#         # Helper: harvest all numbers from a text chunk
-#         def harvest_nums(s):
-#             return [float(x) for x in re.findall(r"[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?", s)]
-
-#         # Helper: first balanced bracketed block between [ ... ]
-#         def extract_first_bracket_block(s):
-#             i = s.find('[')
-#             if i == -1:
-#                 return None
-#             depth, j = 0, i
-#             while j < len(s):
-#                 ch = s[j]
-#                 if ch == '[':
-#                     depth += 1
-#                 elif ch == ']':
-#                     depth -= 1
-#                     if depth == 0:
-#                         return s[i:j+1]
-#                 j += 1
-#             return None
-
-#         for idx, m in enumerate(headers):
-#             name = m.group(1)
-#             d0 = int(m.group(2))
-#             d1 = m.group(3)
-#             shape = (d0, int(d1)) if d1 else (d0,)
-
-#             # Slice the body for this tensor: from end of this header to start of next header (or EOF)
-#             start = m.end()
-#             end = headers[idx + 1].start() if idx + 1 < len(headers) else len(to_parse)
-#             body = to_parse[start:end].strip()
-
-#             if not body:
-#                 raise ValueError(f"No body found after header for tensor '{name}'.")
-
-#             # 1) Try bracketed JSON-like block first
-#             block = extract_first_bracket_block(body)
-#             arr = None
-#             if block is not None:
-#                 # Try JSON parse; if commas are missing, fall back to number harvesting
-#                 try:
-#                     data = json.loads(block)
-#                     arr = np.array(data, dtype=float)
-#                 except json.JSONDecodeError:
-#                     nums = harvest_nums(block)
-#                     size = int(np.prod(shape))
-#                     if len(nums) < size:
-#                         raise ValueError(f"{name}: bracket block has {len(nums)} nums, need {size}")
-#                     arr = np.array(nums[:size], dtype=float).reshape(shape)
-#             else:
-#                 # 2) No brackets — collect all numbers from the body chunk
-#                 nums = harvest_nums(body)
-#                 size = int(np.prod(shape))
-#                 if len(nums) < size:
-#                     # Maybe the value is on the next non-empty line only; try harder by
-#                     # grabbing until a blank line or just accept scalar for shape (1,)
-#                     if size == 1 and len(nums) >= 1:
-#                         nums = nums[:1]
-#                     else:
-#                         raise ValueError(f"{name}: found {len(nums)} numbers, need {size} for shape {shape}")
-#                 arr = np.array(nums[:size], dtype=float).reshape(shape)
-
-#             # If your reveal() printed fixed-point integers, rescale here:
-#             # if default_fracbits is not None:
-#             #     arr = arr / (2 ** default_fracbits)
-
-#             t = torch.from_numpy(arr.astype(np.float32))
-#             if name in transpose_for_linear and t.ndim == 2:
-#                 t = t.T.contiguous()
-
-#             tensors[name] = t.to(device)
-
-#         return tensors
-
-#     def save_tensors_text(tensors, out_dir="/home/jiaqiang/SecF2GNN/results/mpc_outputs/", fmt="%.8f"):
-#         out = Path(out_dir)
-#         out.mkdir(exist_ok=True)
-#         for name, t in tensors.items():
-#             arr = t.detach().cpu().numpy()
-#             path = out / f"{name.replace('.', '_')}.txt"
-#             # Add a helpful header with shape
-#             np.savetxt(path, arr, fmt=fmt, header=f"{name} shape={arr.shape}", comments="")
-#             print(f"💾 Saved {name} -> {path}")
-    
-    
-    # After your MP-SPDZ run:
-    # to_parse = outs[0]  # P0 output
-    # tensors = parse_tensors_from_stdout(
-    #     to_parse,
-    #     # default_fracbits=16,        # uncomment only if reveal() yields fixed-point integers
-    #     device="cpu",
-    #     transpose_for_linear={"classifier.weight"}  # nn.Linear expects (out, in)
-    # )
-
-    # save_dir = Path("mpc_outputs")
-    # save_dir.mkdir(exist_ok=True)
-
-    # for name, tensor in tensors.items():
-    #     arr = tensor.cpu().numpy()  # ensure numpy array
-    #     filename = save_dir / f"{name.replace('.', '_')}.txt"
-        
-    #     # Save as plain text
-    #     # fmt="%.8f" gives up to 8 decimals; adjust as needed.
-    #     np.savetxt(filename, arr, fmt="%.8f")
-        
-    #     print(f"💾 Saved {name} → {filename}")
-# Load into model
-    # model.gc1.weight.data.copy_(tensors["gc1.weight"])
-    # model.gc1.bias.data.copy_(tensors["gc1.bias"].view(-1))
-    # model.gc2.weight.data.copy_(tensors["gc2.weight"])
-    # model.gc2.bias.data.copy_(tensors["gc2.bias"].view(-1))
-    # model.classifier.weight.data.copy_(tensors["classifier.weight"])
-    # model.classifier.bias.data.copy_(tensors["classifier.bias"].view(-1))
-
-
-    # After your MP-SPDZ run:
-    # to_parse = outs[0]  # P0 output
-    # tensors = parse_tensors_from_stdout(
-    #     to_parse,
-    #     # default_fracbits=16,        # uncomment only if reveal() yields fixed-point integers
-    #     device="cpu",
-    #     transpose_for_linear={"classifier.weight"}  # nn.Linear expects (out, in)
-    # )
-
-    # Load into model
-    # model.gc1.weight.data.copy_(tensors["gc1.weight"])
-    # model.gc1.bias.data.copy_(tensors["gc1.bias"].view(-1))
-    # model.gc2.weight.data.copy_(tensors["gc2.weight"])
-    # model.gc2.bias.data.copy_(tensors["gc2.bias"].view(-1))
-    # model.classifier.weight.data.copy_(tensors["classifier.weight"])
-    # model.classifier.bias.data.copy_(tensors["classifier.bias"].view(-1))
-
-
-    # to_parse = outs[0]
-    # nums = [float(x) for x in re.findall(r"[-+]?\d*\.\d+|\d+", to_parse)]
-    # if expect_shape:
-    #     r, c = expect_shape
-    #     if len(nums) < r * c:
-    #         raise ValueError(f"Found {len(nums)} numbers, need {r*c} for shape {expect_shape}")
-    #     mat = np.array(nums[: r * c], dtype=float).reshape(r, c)
-    #     print(f"\n✅ MPC execution complete. Revealed matrix shape: {mat.shape}")
-    #     return mat
-    
-    # rows = []
-    # for line in to_parse.splitlines():
-    #     line = line.strip()
-    #     if line.startswith("[") and line.endswith("]"):
-    #         try:
-    #             rows.append(json.loads(line))
-    #         except Exception:
-    #             pass
-    # if rows:
-    #     mat = np.array(rows, dtype=float)
-    #     print(f"\n✅ MPC execution complete. Revealed matrix shape: {mat.shape}")
-    #     np.savetxt("/home/jiaqiang/SecF2GNN/results/mpc_outputs/GNN_gc1_weight.txt", mat.squeeze(0), fmt="%.6f")
-    #     return mat
-    
-    # revealed = nums[0] if nums else None
-    # print(f"\n⚠️ Could not parse a 2D array; returning first float: {revealed}")
-    # return revealed
-
-    # revealed = None
-    # for o in outs:
-    #     for line in o.splitlines():
-    #         try:
-    #             revealed = float(line.strip())
-    #             break
-    #         except ValueError:
-    #             continue
-    #     if revealed is not None:
-    #         break
-
-    # print(f"\n✅ MPC execution complete. Revealed value: {revealed}")
-    # return revealed
-
 import os
 import re
 import json
@@ -452,8 +155,8 @@ import numpy as np
 import torch
 
 def f2gnn_agg(
-    mp_spdz_path="/home/jiaqiang/SecF2GNN/external/MP-SPDZ",
     program="f2gnn_agg",
+    mp_spdz_path="/home/jiaqiang/SecF2GNN/external/MP-SPDZ",
     parties=2,
     fracbits=16,             # only used if reveal() prints fixed-point integers (usually not needed)
     port_base=15000,
@@ -659,6 +362,7 @@ def f2gnn_agg(
     return sd
 
 
+
 def build_state_dict(mpc_tensors):
     """
     Construct a state_dict directly from MPC outputs.
@@ -678,3 +382,54 @@ def build_state_dict(mpc_tensors):
         state_dict[name] = tensor
 
     return state_dict
+
+def aggregate_weights(w, norm_w):
+    """
+    Returns the weighted weights.
+    """
+    w_new = copy.deepcopy(w[0])
+    for key in w_new.keys():
+        temp = 0
+        for i in range(0, len(w)):
+            temp += torch.mul(w[i][key], norm_w[i])
+        w_new[key] = temp
+    return w_new
+
+def update_weights(w_local, w_server, beta):
+    """
+    Returns the new local weights.
+    """
+    w_new = copy.deepcopy(w_local)
+    for key in w_new.keys():
+        w_new[key] = torch.add(torch.mul(w_new[key], (1 - beta)), torch.mul(w_server[key], beta))
+    return w_new
+
+def aggregate_updates(updates, norm_w):
+    """
+    Aggregate local updates:
+        Delta = sum_i norm_w[i] * updates[i]
+    where updates[i] is a state_dict-like dict:
+        updates[i][k] = local_weights[i][k] - round_global_weights[k]
+    """
+    upd_new = copy.deepcopy(updates[0])
+
+    for key in upd_new.keys():
+        temp = 0
+        for i in range(len(updates)):
+            temp += torch.mul(updates[i][key], norm_w[i])
+        upd_new[key] = temp
+
+    return upd_new
+
+
+def apply_updates(w_server, agg_update):
+    """
+    Apply aggregated update to the server model:
+        w_new = w_server + agg_update
+    """
+    w_new = copy.deepcopy(w_server)
+
+    for key in w_new.keys():
+        w_new[key] = torch.add(w_server[key], agg_update[key])
+
+    return w_new

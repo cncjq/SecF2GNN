@@ -15,10 +15,307 @@ from scipy.spatial import distance
 from sklearn.metrics import roc_auc_score
 
 # --- YOUR helpers (import these FIRST to avoid name clash) ---
-from runner_utils import set_seed, fair_metric, local_fairness, f2gnn_agg, save_local_params
+import random
+from runner_utils import f2gnn_agg, save_local_params, aggregate_weights, update_weights, aggregate_updates, apply_updates
+# from opacus.accountants import RDPAccountant
 
 # Torch Geometric utils
+
 from torch_geometric.utils import subgraph, k_hop_subgraph
+
+import math
+
+# from Helper_Functions import Vname_to_FeedPname, Vname_to_Pname, check_validaity_of_FLAGS, create_save_dir, \
+#     global_step_creator, load_from_directory_or_initialize, bring_Accountant_up_to_date, save_progress, \
+#     WeightsAccountant, print_loss_and_accuracy, print_new_comm_round, PrivAgent, Flag
+
+def set_seed(args):
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    if args.gpu != 'cpu':
+        torch.cuda.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)
+
+def fair_metric(output, idx, labels, sens):
+    val_y = labels[idx].cpu().numpy()
+    idx_s0 = sens.cpu().numpy()[idx.cpu().numpy()] == 0
+    idx_s1 = sens.cpu().numpy()[idx.cpu().numpy()] == 1
+
+    idx_s0_y1 = np.bitwise_and(idx_s0, val_y == 1)
+    idx_s1_y1 = np.bitwise_and(idx_s1, val_y == 1)
+
+    pred_y = (output[idx].squeeze() > 0).type_as(labels).cpu().numpy()
+    parity = abs(sum(pred_y[idx_s0]) / sum(idx_s0) - sum(pred_y[idx_s1]) / sum(idx_s1))
+    equality = abs(sum(pred_y[idx_s0_y1]) / sum(idx_s0_y1) - sum(pred_y[idx_s1_y1]) / sum(idx_s1_y1))
+
+    return parity, equality
+
+def local_fairness(model, clients, device):
+    local_parity, local_equality = [], []
+    model = model.to(device)
+    model.eval()
+    for client in clients:
+        model.eval()
+        client.sub_G = client.sub_G.to(device)
+        client.sub_features = client.sub_features.to(device)
+        local_ouput = model(client.sub_G, client.sub_features)
+        local_parity_element, local_equality_element = fair_metric(local_ouput, client.idx_train_with_mask,
+                                                                   client.sub_labels, client.sub_sens)
+        local_parity.append(local_parity_element)
+        local_equality.append(local_equality_element)
+
+    mean_local_parity = sum(local_parity) / len(local_parity)
+    mean_local_equality = sum(local_equality) / len(local_equality)
+    print("mean_local_parity: ", mean_local_parity.item())
+    print("mean_local_equality: ", mean_local_equality.item())
+    return mean_local_parity.item(), mean_local_equality.item()
+
+def sd_to_update(local_sd, global_sd):
+    upd = {}
+    for k, v in local_sd.items():
+        if torch.is_tensor(v) and torch.is_floating_point(v):
+            upd[k] = (v.detach() - global_sd[k].detach()).clone()
+    return upd
+
+def get_l2_norm(upd, eps=1e-12):
+     # Accept torch.nn.Module as input
+    if isinstance(upd, torch.nn.Module):
+        upd = upd.state_dict()
+
+    sq = None
+    for v in upd.values():
+        # only include floating tensors (skip integer buffers, counters, etc.)
+        if torch.is_tensor(v) and torch.is_floating_point(v):
+            vv = v.reshape(-1).float()
+            s = vv.pow(2).sum()
+            sq = s if sq is None else sq + s
+
+    if sq is None:
+        sq = torch.tensor(0.0)
+
+    return torch.sqrt(sq + eps)
+
+def clip_update(upd, clip_norm):
+    n = get_l2_norm(upd)
+    scale = min(1.0, (clip_norm / n).item())
+    # scale = 1
+    if scale < 1.0:
+        for k in upd:
+        # scale = min(1.0, (clip_norm / n[k]))
+        # if scale < 1.0:
+            upd[k] = upd[k] * scale
+    # return upd, float(n.detach().cpu()), scale
+    return upd
+
+def _to_update_dict(x):
+    """Accept a model or dict, return dict[str, Tensor]."""
+    if isinstance(x, torch.nn.Module):
+        return x.state_dict()
+    return x
+
+def get_clip_norm(local_items, min_clip=1e-12):
+#     """
+#     Return median L2 norm over a list of local items.
+
+#     local_items can be:
+#       - list of client models (torch.nn.Module)
+#       - list of state_dicts / update dicts (dict[str, Tensor])
+
+#     Note: This computes norms of whatever dict you pass in.
+#           If you pass full weights (state_dict), this is 'weight norm'.
+#           If you pass updates Δ_i, this is 'update norm' (what clipping usually wants).
+#     """
+    norms = []
+
+    for item in local_items:
+        upd = _to_update_dict(item)
+
+        # compute norm, but safely skip non-floating tensors
+        n = get_l2_norm(upd)
+        if torch.is_tensor(n):
+            n = n.detach().cpu().item()
+        norms.append(n)
+
+    clip_norm = max(float(np.median(norms)) if norms else 0.0, float(min_clip)) #median
+
+    ### find the largest norm - smallest norm
+
+    # if len(norms) == 0:
+    #     clip_norm = float(min_clip)
+    # else:
+    #     max_norm = max(norms)
+    #     min_norm_val = min(norms)
+    #     clip_norm = max(max_norm - min_norm_val, float(min_clip))
+
+    return clip_norm, norms
+
+def add_noise_to_update(upd, noise_multiplier, clip_norm):
+    """Add N(0, (sigma*C)^2) noise elementwise to each tensor."""
+    if noise_multiplier <= 0:
+        return upd
+    std = noise_multiplier * clip_norm
+    for k, v in upd.items():
+        # print(clip_norm)
+        # print(std)
+        # print(upd[k])
+        upd[k] = v + torch.normal(mean=0.0, std=std, size=v.shape, device=v.device, dtype=v.dtype)
+    # upd = upd + torch.normal(mean=0.0, std=std, size=upd.shape, device=upd.device, dtype=upd.dtype)
+    return upd
+
+# def aggregate_updates(updates, weights, noise_multiplier, clip_norm):
+#     """Aggregate dict updates. If weights provided, they must be nonnegative; we normalize them."""
+#     keys = list(updates[0].keys())
+#     device = next(iter(updates[0].values())).device
+#     out = {k: torch.zeros_like(updates[0][k]) for k in keys}
+
+#     if weights is None:
+        # for upd in updates:
+        #     for k in keys:
+        #         out[k] += upd[k]
+        # m = max(len(updates), 1)
+        # for k in keys:
+        #     out[k] /= m
+    #     print("error for weights")
+    #     exit(99)
+    # else:
+    #     w = torch.as_tensor(weights, device=device, dtype=torch.float32)
+    #     w = w / (w.sum() + 1e-12)
+    #     for upd, wi in zip(updates, w):
+    #         for k in keys:
+    #             # out[k] += add_noise_to_update(upd[k], noise_multiplier, clip_norm) * wi            
+    #             out[k] += wi * upd[k]
+    # return out
+
+# def apply_update(global_sd, upd):
+#     """Return new global state dict after adding update to float params."""
+#     new_sd = {}
+#     for k, v in global_sd.items():
+#         if torch.is_floating_point(v) and k in upd:
+#             new_sd[k] = (v + upd[k]).detach()
+#         else:
+#             new_sd[k] = v
+#     return new_sd
+
+# def dp_server_aggregate(local_state_dicts, 
+#                         norms,
+#                         # global_state_dict, 
+#                         clip_norm, noise_multiplier, weights=None):
+#     """
+#     DP server aggregation for client-level privacy:
+#     XXXXX  - build client updates Δ_i = w_i - w_global
+#       - clip each Δ_i to ||Δ_i||2 <= C
+#       - aggregate (mean or weighted)
+#       - add Gaussian noise to aggregate
+#       - apply to global
+#     """
+#     # updates = [sd_to_update(sd, global_state_dict) for sd in local_state_dicts]
+
+#     clipped_updates = []
+#     # norms = []
+#     # scales = []
+#     for upd in local_state_dicts:
+#         cu = clip_update(upd, clip_norm)
+#         clipped_updates.append(cu)
+
+#     agg = aggregate_updates(clipped_updates, weights, noise_multiplier, clip_norm)
+#     new_global = add_noise_to_update(agg, noise_multiplier, clip_norm)
+#     # new_global = apply_update(global_state_dict, agg)
+#     return new_global
+#     # return agg
+
+############## adding for update dp ##############
+
+# def sd_to_update(local_sd, global_sd):
+#     upd = {}
+#     for k, v in local_sd.items():
+#         gv = global_sd[k]
+#         if torch.is_tensor(v) and torch.is_floating_point(v):
+#             upd[k] = (v - gv).detach()
+#     return upd
+
+# def apply_update(global_sd, upd):
+#     new_sd = {}
+#     for k, v in global_sd.items():
+#         if torch.is_tensor(v) and torch.is_floating_point(v) and k in upd:
+#             new_sd[k] = (v + upd[k]).detach()
+#         else:
+#             new_sd[k] = v
+#     return new_sd
+
+def dp_server_aggregate(local_updates,
+                        global_state_dict,
+                        clip_norm, 
+                        noise_multiplier,
+                        weights=None):
+    # 1) build updates Δ_i = w_i - w_global
+    # updates = [sd_to_update(sd, global_state_dict) for sd in local_state_dicts]
+
+    # 2) clip each update
+    clipped_updates = []
+    for upd in local_updates:
+        cu = clip_update(upd, clip_norm)   # your clip_update uses get_l2_norm(dict)
+        clipped_updates.append(cu)
+
+    # 3) aggregate updates (weighted or uniform)
+    agg = aggregate_updates(clipped_updates, weights)
+    # agg = aggregate_updates(local_updates, weights)
+
+    # print(clip_norm)
+    # 4) add noise to aggregated update
+    noisy_agg = add_noise_to_update(agg, noise_multiplier, 1/10 * clip_norm)
+
+    # 5) apply update to global weights
+    new_global = apply_updates(global_state_dict, noisy_agg)
+    # new_global = apply_updates(global_state_dict, agg)
+    return new_global
+
+# def aggregate_updates(updates, weights, noise_multiplier, clip_norm):
+#     keys = list(updates[0].keys())
+#     out = {k: torch.zeros_like(updates[0][k]) for k in keys}
+
+#     if weights is None:
+#         m = max(len(updates), 1)
+#         for upd in updates:
+#             for k in keys:
+#                 out[k] += upd[k]
+#         for k in keys:
+#             out[k] /= m
+#     else:
+#         device = next(iter(updates[0].values())).device
+#         w = torch.as_tensor(weights, device=device, dtype=torch.float32)
+#         w = w / (w.sum() + 1e-12)
+#         for upd, wi in zip(updates, w):
+#             for k in keys:
+#                 out[k] += wi * upd[k]
+#     return out
+
+def rdp_epsilon_approx(q: float, sigma: float, steps: int, delta: float) -> float:
+    """
+    Approximate RDP->(eps,delta) for subsampled Gaussian mechanism.
+    Works best when q is small (<= 0.05). Conservative when q is larger.
+    """
+    if sigma <= 0:
+        return float("inf")
+    if not (0 < q <= 1):
+        raise ValueError("q must be in (0,1].")
+    if not (0 < delta < 1):
+        raise ValueError("delta must be in (0,1).")
+
+    # Candidate Renyi orders; extend if you want.
+    orders = [2, 3, 4, 5, 8, 16, 32, 64, 128, 256]
+    log_inv_delta = math.log(1.0 / delta)
+
+    best_eps = float("inf")
+    for alpha in orders:
+        # Small-q approximation:
+        # RDP ≈ (q^2 * alpha * steps) / (2*sigma^2)
+        rdp = (q * q * alpha * steps) / (2.0 * sigma * sigma)
+        eps = rdp + log_inv_delta / (alpha - 1.0)
+        best_eps = min(best_eps, eps)
+
+    return best_eps
+
 
 
 def import_external(ext_src: Path):
@@ -32,8 +329,12 @@ def import_external(ext_src: Path):
     from options import args_parser
     from models import FairGNN
     from utils import (  # external utils (name-clash is fine because of sys.path order)
-        average_weights, aggregate_weights, exp_details, load_pokec,
-        accuracy, density, update_weights, model_fair_metric
+        average_weights, 
+        aggregate_weights, 
+        exp_details, load_pokec,
+        accuracy, density, 
+        # update_weights, 
+        model_fair_metric
     )
     from terminal import Client  # Subgraph not used directly here
 
@@ -46,13 +347,15 @@ def import_external(ext_src: Path):
         "load_pokec": load_pokec,
         "accuracy": accuracy,
         "density": density,
-        "update_weights": update_weights,
+        # "update_weights": update_weights,
         "model_fair_metric": model_fair_metric,
         "Client": Client,
     }
 
 
 def main():
+
+    # ---- DP server defaults (override via args if you add flags later) ----
     warnings.filterwarnings("ignore", category=UserWarning)
     torch.set_printoptions(profile="full")
     torch.autograd.set_detect_anomaly(True)
@@ -66,7 +369,24 @@ def main():
     args = ext["args_parser"]()
     ext["exp_details"](args)
 
+    # sys.path.insert(0, "/home/jiaqiang/SecF2GNN/external/opacus")
+
+
     logger = SummaryWriter(log_dir=getattr(args, "log_dir", "runs"))
+    if not hasattr(args, "mpc"): args.mpc = False          # enable/disable
+    if not hasattr(args, "dp_server"): args.dp_server = False          # enable/disable
+    if not hasattr(args, "dp_clip"): args.dp_clip = 1.0              # C
+    if not hasattr(args, "dp_noise"): args.dp_noise = 0.5            # sigma
+    # if not hasattr(args, "dp_noise"): args.dp_noise = 1.0            # sigma
+
+    # delta = getattr(args, "dp_delta", None)
+    # if not hasattr(args, "dp_delta") or args.dp_delta is None:
+    #     args.dp_delta = 1.0 / (args.ego_number ** 2)
+    # if delta is None:
+    #     delta = 1.0 / (args.ego_number ** 2)
+    if not hasattr(args, "dp_delta"): args.dp_delta = 1.0 / (args.ego_number ** 2)
+    if not hasattr(args, "dp_report_every"): args.dp_report_every = 10
+
 
     # device
     if args.gpu != 'cpu':
@@ -77,7 +397,8 @@ def main():
         device = torch.device("cpu")
     print("device: ", device)
 
-    set_seed(args.seed, args.gpu)
+    # set_seed(args.seed, args.gpu)
+    set_seed(args)
 
     # --- dataset selection & paths (use external data folder explicitly) ---
     if args.dataset == 'pokec-z':
@@ -109,8 +430,9 @@ def main():
     label_idx = np.where(labels >= 0)[0]
     sens_idx = set(np.where(sens >= 0)[0])
     idx_used = np.asarray(list(sens_idx & set(label_idx)))
-    np.random.seed(args.seed)
-    np.random.shuffle(idx_used)
+    # np.random.seed(args.seed)
+    random.seed(args.seed)
+    random.shuffle(idx_used)
 
     idx_train = torch.LongTensor(idx_used[:int(0.5 * len(idx_used))])
     idx_val   = torch.LongTensor(idx_used[int(0.5 * len(idx_used)):int(0.75 * len(idx_used))])
@@ -137,11 +459,12 @@ def main():
     inter_ratio_per_client = []
 
     print("Begin to generate ego networks.")
-    np.random.seed(args.seed)
+    random.seed(args.seed)
     for _ in range(args.ego_number):
         sub_nodes = torch.LongTensor([1, 1])
         while sub_nodes.shape[0] <= 2:
-            ego = int(np.random.choice(idx_train.cpu().numpy().tolist()))
+            # ego = int(np.random.choice(idx_train.cpu().numpy().tolist()))
+            ego = random.choice(idx_train.tolist())
             sub_nodes, sub_edges, _, _ = k_hop_subgraph(node_idx=ego, num_hops=args.num_hops, edge_index=edge_index)
 
         clients.append(ext["Client"](features, labels, sens, sub_nodes, sub_edges, idx_train, idx_val, idx_test, args))
@@ -186,18 +509,43 @@ def main():
     counter = 0
     start = t()
 
+    np.random.seed(args.seed)
+    # accountant 
+    # = RDPAccountant()
+    # if not privacy_agent:
+    #     privacy_agent = PrivAgent(len(egos), 'default_agent')
     for epoch in tqdm(range(args.epochs)):
-        local_weights, local_losses, local_cls_losses, local_acc = [], [], [], []
+        
+        # eps = accountant.get_epsilon(args.dp_delta)
+        # if eps > args.dp_eps:
+        #     break
+
+        # local_weights, local_losses, local_cls_losses, local_acc = [], [], [], []
+        # local_parity, local_equality = [], []
+        local_weights, local_updates = [], []
+        local_losses, local_cls_losses, local_acc = [], [], []
         local_parity, local_equality = [], []
+
+        round_global_weights = copy.deepcopy(global_weights)
 
         print(f'\n | Training Round : {epoch + 1} |\n')
 
         if args.ego_number <= 200:
-            egos = np.random.choice(range(len(clients)), int(args.ego_number / 10))
+            egos = np.random.choice(range(len(clients)), int(args.ego_number / 10), replace=False)
         elif args.ego_number == 1000:
-            egos = np.random.choice(range(len(clients)), int(args.ego_number / 50))
+            egos = np.random.choice(range(len(clients)), int(args.ego_number / 50), replace=False)
         else:
-            egos = np.random.choice(range(len(clients)), int(args.ego_number / 20))
+            egos = np.random.choice(range(len(clients)), int(args.ego_number / 20), replace=False)
+        # from opacus.accountants.utils import get_noise_multiplier
+
+        # sigma = get_noise_multiplier(
+        #     target_epsilon=8.0,
+        #     target_delta=1/(args.ego_number**2),
+        #     sample_rate=egos / args.ego_number,
+        #     steps=epoch,
+        #     accountant="rdp",
+        # )
+        # args.dp_delta = sigma
 
         for i in egos:
             if args.gpu:
@@ -209,26 +557,66 @@ def main():
 
             # Optional 'combine' update method using JS distance
             if args.update_method == 'combine':
-                y_global = global_model(clients[i].sub_G, clients[i].sub_features)[clients[i].idx_train_with_mask]
-                y_local  = local_models[i](clients[i].sub_G, clients[i].sub_features)[clients[i].idx_train_with_mask]
+                # y_global = global_model(clients[i].sub_G, clients[i].sub_features)[clients[i].idx_train_with_mask]
+                # y_local  = local_models[i](clients[i].sub_G, clients[i].sub_features)[clients[i].idx_train_with_mask]
 
-                if len(y_global) >= 1 and len(y_local) >= 1:
-                    preds_global = (y_global > 0).type_as(labels)
-                    preds_local  = (y_local  > 0).type_as(labels)
-                    y_g = softmax([float(v) / args.tau_combine for v in preds_global])
-                    y_l = softmax([float(v) / args.tau_combine for v in preds_local])
-                    Beta = distance.jensenshannon(y_g, y_l)
-                    if not torch.is_tensor(Beta):
-                        Beta = torch.tensor(Beta, dtype=torch.float32, device=device)
+                ### copy and paste from source code ###
+                y_global = global_model(clients[i].sub_G, clients[i].sub_features)
+                y_global_ = y_global.squeeze()
+                y_global_ = y_global[clients[i].idx_train_with_mask]
+                y_local = local_models[i](clients[i].sub_G, clients[i].sub_features)
+                y_local_ = y_local.squeeze()
+                y_local_ = y_local[clients[i].idx_train_with_mask]
+                # if len(y_global) >= 1 and len(y_local) >= 1:
+                #     preds_global = (y_global > 0).type_as(labels)
+                #     preds_local  = (y_local  > 0).type_as(labels)
+                #     y_g = softmax([float(v) / args.tau_combine for v in preds_global])
+                #     y_l = softmax([float(v) / args.tau_combine for v in preds_local])
+                #     Beta = distance.jensenshannon(y_g, y_l)
+                #     if not torch.is_tensor(Beta):
+                #         Beta = torch.tensor(Beta, dtype=torch.float32, device=device)
 
-                    w_local = local_models[i].state_dict()
-                    w_server = {}
-                    for k, v in global_weights.items():
-                        if k in w_local:
-                            w_server[k] = v.to(device=w_local[k].device, dtype=w_local[k].dtype)
-                    new_local_weights = ext["update_weights"](w_local, w_server, Beta)
+                #     w_local = local_models[i].state_dict()
+                #     w_server = {}
+                #     for k, v in global_weights.items():
+                #         if k in w_local:
+                #             w_server[k] = v.to(device=w_local[k].device, dtype=w_local[k].dtype)
+                #     new_local_weights = ext["update_weights"](w_local, w_server, Beta)
 
-                    # new_local_weights = ext["update_weights"](local_models[i].state_dict(), global_weights, Beta)
+                #     # new_local_weights = ext["update_weights"](local_models[i].state_dict(), global_weights, Beta)
+                #     local_models[i].load_state_dict(new_local_weights)
+                # else:
+                #     local_models[i].load_state_dict(copy.deepcopy(global_weights))
+                if len(y_global_) >= 2 and len(y_local_) >= 2:
+
+                    preds_y_global = (y_global_ > 0).type_as(labels)
+                    temp_y_global = [float(i) / args.tau_combine for i in preds_y_global]
+                    y_global = softmax(temp_y_global)
+
+                    preds_y_local = (y_local_ > 0).type_as(labels)
+                    temp_y_local = [float(i) / args.tau_combine for i in preds_y_local]
+                    y_local = softmax(temp_y_local)
+
+                    Beta = distance.jensenshannon(y_global, y_local)
+                elif len(y_global_) == 1 and len(y_local_) == 1:
+                    y_global_ = y_global_.detach().cpu().numpy()
+                    y_global_[y_global_ > 0] = 1
+                    temp_y_global = y_global_ / args.tau_combine
+                    y_global = softmax(temp_y_global)
+
+                    y_local_ = y_local_.detach().cpu().numpy()
+                    y_local_[y_local_ > 0] = 1
+                    temp_y_local = y_local_ / args.tau_combine
+                    y_local = softmax(temp_y_local)
+
+                    Beta = distance.jensenshannon(y_global, y_local)
+                    Beta = torch.FloatTensor(Beta)
+                    Beta = Beta.to(device)
+                else:
+                    pass
+            if args.update_method == 'combine':
+                if len(y_global_) >= 1 and len(y_local_) >= 1:
+                    new_local_weights = update_weights(local_models[i].state_dict(), global_weights, Beta)
                     local_models[i].load_state_dict(new_local_weights)
                 else:
                     local_models[i].load_state_dict(copy.deepcopy(global_weights))
@@ -242,7 +630,12 @@ def main():
                                          clients[i].sub_sens, clients[i].idx_train_with_mask)
 
             # metrics from local model
-            local_weights.append(copy.deepcopy(local_models[i].state_dict()))
+            # local_weights.append(copy.deepcopy(local_models[i].state_dict()))
+            final_local_sd = copy.deepcopy(local_models[i].state_dict())
+            local_weights.append(final_local_sd)  # optional, for debugging/logging
+            local_updates.append(sd_to_update(final_local_sd, round_global_weights))
+            ###################
+
             local_losses.append(local_models[i].G_loss.item())
             local_cls_losses.append(local_models[i].cls_loss.item())
             local_parity.append(local_models[i].parity)
@@ -272,25 +665,65 @@ def main():
 
         # aggregate
         if args.aggregate_method == 'avg':
-            global_weights = ext["average_weights"](local_weights)
+            # print("++++++++++++++++++")
+            # global_weights = ext["average_weights"](local_weights)
+            # if args.dp_server:
+            #     global_weights, dp_norms, dp_scales = dp_server_aggregate(
+            #         local_state_dicts=local_weights,
+            #         # global_state_dict=global_weights,
+            #         clip_norm=args.dp_clip,
+            #         noise_multiplier=args.dp_noise,
+            #         weights=None
+            #     )
+            # else:
+                global_weights = ext["average_weights"](local_weights)
+
         else:
-            if args.mpc == True:
+            if args.mpc in ("mpc", "exp"):
                 if args.aggregate_method == '1-|inter-intra|':
                     difference_weight_vector  = [abs(inter_ratio_per_client[i] - intra_ratio_per_client[i]) for i in egos]
                     difference_weight_vector2 = [(1 - i) for i in difference_weight_vector]
-                    # temp_weights_vector = softmax(difference_weight_vector2)
+                    temp_weights_vector = softmax(difference_weight_vector2)
                     temp_weights_vector2 = [(1 / (local_models[i].equality + local_models[i].parity + 1E-5)) for i in egos]
-                    # temp_weights_vector2 = torch.tensor(temp_weights_vector2, device=device)
-                    save_local_params(
-                        "results/mpc_inputs",
-                        "client0_round1",
-                        args.lambda1,
-                        args.tau,
-                        difference_weight_vector2,
-                        temp_weights_vector2,
-                        local_weights
-                    )
-                    global_weights = f2gnn_agg()
+
+                    if args.mpc == "mpc":
+                        temp_weights_vector2 = torch.tensor(temp_weights_vector2, device=device)
+                        save_local_params(
+                            "results/mpc_inputs",
+                            "client0_round1",
+                            args.lambda1,
+                            args.tau,
+                            difference_weight_vector2,
+                            temp_weights_vector2,
+                            local_weights
+                        )
+                        global_weights = f2gnn_agg()
+                        global_weights = {
+                            k: v.to(device) if torch.is_tensor(v) else v
+                            for k, v in global_weights.items()
+                        }
+                    else:
+                        # difference_weight_vector3 = torch.exp(difference_weight_vector2)
+                        # temp_weights_vector3 = torch.exp(temp_weights_vector2)
+                        diff2_t = torch.as_tensor(difference_weight_vector2, device=device, dtype=torch.float32)
+                        temp2_t = torch.as_tensor(temp_weights_vector2, device=device, dtype=torch.float32)
+
+                        diff3_t = torch.exp(diff2_t)
+                        temp3_t = torch.exp(temp2_t)
+
+                        if args.mpc == "exp":
+                            save_local_params(
+                                "results/mpc_inputs",
+                                "client0_round1",
+                                args.lambda1,
+                                args.tau,
+                                diff3_t,
+                                temp3_t,
+                                local_weights
+                            )
+                            global_weights = f2gnn_agg("exp_f2gnn_agg")
+                        else:
+                            raise ValueError(f"mpc must be one of ['mpc','exp','none'], got: {args.mpc}")
                     # temp_weights_vector2 = torch.softmax(temp_weights_vector2, dim=-1)
                     # temp_weights_vector2 = [torch.exp(i) for i in temp_weights_vector2]
 
@@ -318,7 +751,37 @@ def main():
                     normalized_weights_vector = torch.softmax(normalized_weights_vector, dim=-1)
                 else:
                     raise ValueError("args.aggregate_method is wrong!")
-                global_weights = ext["aggregate_weights"](local_weights, normalized_weights_vector)
+                # global_weights = ext["aggregate_weights"](local_weights, normalized_weights_vector)
+                if args.dp_server:
+                    args.dp_clip, norms = get_clip_norm(local_updates)
+                    global_weights = dp_server_aggregate(
+                        local_updates,
+                        global_weights,
+                        args.dp_clip,
+                        # norms,
+                        args.dp_noise,
+                        normalized_weights_vector
+                    )
+                    # q = 1 / len(egos)
+                    # accountant.step(args.dp_noise, q)
+                else:
+                # global_weights = aggregate_weights(local_weights, normalized_weights_vector)
+                    global_updates = aggregate_updates(local_updates, normalized_weights_vector)
+                    global_weights = apply_updates(round_global_weights, global_updates)
+
+        # if args.dp_server:
+        #     logger.add_scalar("dp/clip_norm", args.dp_clip, epoch)
+        #     logger.add_scalar("dp/noise_multiplier", args.dp_noise, epoch)
+        #     logger.add_scalar("dp/mean_client_update_norm", float(np.mean(dp_norms)), epoch)
+        #     logger.add_scalar("dp/mean_clip_scale", float(np.mean(dp_scales)), epoch)
+        if args.dp_server and args.dp_noise > 0 and ((epoch + 1) % args.dp_report_every == 0):
+            q = len(egos) / float(args.ego_number)
+            delta = getattr(args, "dp_delta", 1.0 / (args.ego_number ** 2))
+            delta = args.dp_delta
+            eps = rdp_epsilon_approx(q=q, sigma=args.dp_noise, steps=epoch + 1, delta=delta)
+            print(f"[DP approx] round={epoch+1} q={q:.4f} sigma={args.dp_noise} delta={delta:g} => eps≈{eps:.3f}")
+
+
         global_model.load_state_dict(global_weights)
         device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         global_model = global_model.to(device)
