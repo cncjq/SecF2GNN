@@ -1,9 +1,1 @@
-# SecF2GNN
-
-Plaintext F2GNN done.
-Direct implementation over MPC for SecF2GNN done.
-
-To do:
-
-Refined MPC implementation.
-DP for global updates.
+This is the repository for "Privacy-Preserving and Fair Training for Federated GNN" in Journal of Cybersecurity and Privacy.
